@@ -11,7 +11,9 @@
 	
 	var JSON_MEDIA_TYPE = /^application\/([a-zA-Z+]\+)?json(;.*)?/;
 	
-	function DocumentShard(executeFunction, defaultToDone) {
+	var counter = 0;
+	function DocumentShard(executeFunction, defaultToDone, includeFunction) {
+		var thisCounter = this.counter = counter++;
 		if (!executeFunction) {
 			throw new Error;
 		}
@@ -20,6 +22,8 @@
 		var queue = [];
 		var bufferString = "";
 		var callbacks = null;
+		
+		this.include = includeFunction;
 		
 		this.echo = function (string) {
 			if (queue.length == 0 && callbacks) {
@@ -45,13 +49,16 @@
 		function shardComplete(error) {
 			if (error) {
 				resultIsError(error);
-				callbacks = null;
 				return;
 			}
 			queue.shift();
 			moveToNextShard();
 		}
 		function moveToNextShard() {
+			if (bufferString) {
+				queue.push(bufferString);
+				bufferString = "";
+			}
 			while (queue.length > 0) {
 				if (queue[0] instanceof DocumentShard) {
 					queue[0].callbacks(callbacks.data, shardComplete);
@@ -66,6 +73,10 @@
 			}
 			if (executed && callbacks.finished) {
 				callbacks.finished();
+				callbacks.finished = false; // Don't call more than once
+				callbacks.data = function () {
+					throw new Error("Cannot output data once shard is finished");
+				};
 			}
 		}
 		this.callbacks = function (dc, fc) {
@@ -77,15 +88,15 @@
 			return this;
 		};
 		
-		this.shard = function (executeFunction) {
+		this.shard = function (executeFunction, defaultToDone) {
 			if (bufferString || (queue.length == 0 && !callbacks)) {
 				queue.push(bufferString);
 				bufferString = "";
 			}
 
-			var shard = new DocumentShard(executeFunction);
+			var shard = new DocumentShard(executeFunction, defaultToDone, includeFunction);
 			queue.push(shard);
-			if (queue.length == 0) {
+			if (queue.length == 1) {
 				if (callbacks) {
 					shard.callbacks(callbacks.data, shardComplete);
 				} else {
@@ -94,11 +105,11 @@
 					});
 				}
 			}
-			return this;
+			return shard.shard;
 		};
 		
 		var executed = false;
-		var doneCallback = function (error) {
+		this.done = function (error) {
 			if (error) {
 				resultIsError(error);
 			}
@@ -106,13 +117,18 @@
 			if (callbacks) {
 				moveToNextShard();
 			}
+			this.shard = this.echo = function () {
+				throw new Error("Action not allowed after shard is closed");
+			};
 		};
 		this.wait = function () {
 			defaultToDone = false;
 		};
+		this.shard.shard = this.shard;
 		this.shard.echo = this.echo;
-		this.shard.done = doneCallback;
+		this.shard.done = this.done;
 		this.shard.wait = this.wait;
+		this.shard.include = this.include;
 		process.nextTick(function () {
 			var result = executeFunction.call(thisShard, thisShard.shard, thisShard.echo);
 			if (result instanceof Error) {
@@ -123,7 +139,7 @@
 				if (typeof result == "string") {
 					thisShard.echo(result);
 				}
-				doneCallback();
+				thisShard.done();
 			}
 			if (callbacks) {
 				moveToNextShard();
@@ -164,29 +180,35 @@
 		}
 	}
 	Handler.prototype = {
-		writeShard: function writeShard(request, response, execFunction) {
-			var shard = new DocumentShard(execFunction, true);
+		writeShard: function writeShard(request, response, execFunction, doneFunction, includeFunction) {
+			if (!doneFunction) {
+				doneFunction = function (error) {
+					if (error) {
+						publicApi.errorPage(500, error, request, response);
+						return;
+					}
+					response.end();
+				};
+			}
+			var shard = new DocumentShard(execFunction, true, includeFunction);
 			shard.callbacks(function (data) {
 				response.write(data.toString(), 'utf8');
-			}, function (error) {
-				if (error) {
-					publicApi.errorPage(500, error, request, response);
-					return;
-				}
-				response.end();
-			});
+			}, doneFunction);
 		}
 	};
 	
-	function CompositeHandler() {
-		CompositeHandler.super_.apply(this, arguments);
+	function CompositeHandler(filter, processFunction) {
+		if (!processFunction) {
+			processFunction = subHandlers;
+		}
+		CompositeHandler.super_.call(this, filter, processFunction);
 		
 		var handlers = [];
 		this.addHandler = function (handler) {
 			handlers.push(handler);
 			return this;
 		};
-		this.subHandlers = function (request, response, next) {
+		function subHandlers(request, response, next) {
 			var index = 0;
 			function tryNextHandler() {
 				if (index < handlers.length) {
@@ -196,7 +218,8 @@
 				next();
 			}
 			tryNextHandler();
-		};
+		}
+		this.subHandlers = subHandlers;
 	}
 	util.inherits(CompositeHandler, Handler);
 	
@@ -353,6 +376,9 @@
 		}
 		
 		return new CompositeHandler(filter, function (request, response, next) {
+			if (request.path.charAt(request.path.length - 1) != "/") {
+				return this.subHandlers(request, response, next);
+			}
 			var thisHandler = this;
 			var index = 0;
 			var oldPath = request.path;
@@ -379,6 +405,7 @@
 		}));
 
 	handlers.jstl = (function () {
+		var includeDirs = [];
 		var jstlCache = {};
 		var cacheMilliseconds = 10000;
 		function deleteTimeout(path) {
@@ -407,32 +434,20 @@
 			}
 			return entry;
 		}
-	
-		var jstlReader = publicApi.indexFiles(true, ["index.jshtml"]);
-		jstlReader.addHandler(new Handler(true, function (request, response, next) {
-			var thisHandler = this;
-			var scriptPath = request.localPath + request.path;
-			var cached = getCached(scriptPath);
-			if (!cached) {
-				return next();
-			}
-			fs.stat(scriptPath, function (error, stats) {
-				if (error) {
-					return next();
-				}
-				if (stats.mtime >= cached.when) {
-					return next();
-				}
-				var template = cached.template;
-
-				response.setHeader('Content-Type', 'text/html');
-				thisHandler.writeShard(request, response, function (shard, echo) {
-					return template.call(this, request, response, shard, echo);
-				});
-			});
-		}));
-		jstlReader.addHandler(publicApi.fileReader(true, function (request, response, buffer, next) {
-			var template = jstl.create(buffer.toString()).compile(function (varName) {
+		
+		function compileTemplate(scriptPath, string) {
+			var headerText = [
+				"var shard = arguments[0];",
+				"var echo = arguments[1];",
+				"var request = arguments[2];",
+				"var response = arguments[3];"
+			].join("\n");
+			var predefinedVars = {
+				ent: ent,
+				require: require,
+				echo: null
+			};
+			var directExpressionFunction = function (varName) {
 				if (varName.charAt(0) == "=") {
 					return "ent.encode('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == "%") {
@@ -442,27 +457,125 @@
 				} else if (varName.charAt(0) == "*") {
 					return "('' + (" + varName.substring(1) + "))";
 				}
-			}, [
-				"var request = arguments[0];",
-				"var response = arguments[1];",
-				"var shard = arguments[2];",
-				"var echo = arguments[3];"
-			].join("\n"),
-			{
-				ent: ent,
-				require: require,
-				echo: null
+			};
+			var template = jstl.create(string).compile(directExpressionFunction, headerText, predefinedVars);
+			return template;
+		}
+		
+		function getTemplateForFile(scriptPath, callback) {
+			var cached = getCached(scriptPath);
+			if (!cached) {
+				return loadFromFile();
+			}
+			fs.stat(scriptPath, function (error, stats) {
+				if (error) {
+					return callback(error);
+				}
+				if (stats.mtime >= cached.when) {
+					loadFromFile();
+				}
+				var template = cached.template;
+				callback(null, template);
 			});
+			
+			function loadFromFile() {
+				fs.readFile(scriptPath, {encoding: 'utf8'}, function (error, templateCode) {
+					if (error) {
+						return callback(error);
+					}
+					var template = compileTemplate(scriptPath, templateCode);
+					setCached(scriptPath, template);
+					callback(null, template);
+				})
+			}
+		}
 		
+		var handleFile = new publicApi.indexFiles(true, ["index.jshtml"]);
+		handleFile.addHandler(new Handler(true, function (request, response, next) {
+			var thisHandler = this;
 			var scriptPath = request.localPath + request.path;
-			setCached(scriptPath, template);
-		
-			response.setHeader('Content-Type', 'text/html');
-			this.writeShard(request, response, function (shard, echo) {
-				return template.call(this, request, response, shard, echo);
+			var scriptDir = path.dirname(scriptPath);
+			
+			function include(includeFilename, callback) {
+				if (!callback) {
+					callback = function (error, result, shard, echo) {};
+				}
+				var includePaths = [path.resolve(scriptDir, includeFilename)];
+				for (var i = 0; i < includeDirs.length; i++) {
+					includePaths.push(path.resolve(includeDirs[i], includeFilename));
+				}
+				this.shard(function (shard, echo) {
+					function tryNext() {
+						var includeFilename = includePaths.shift();
+						getTemplateForFile(includeFilename, function (error, template) {
+							if (error) {
+								if (includePaths.length && (error.code == 'ENOENT' || error.code == 'ENOTDIR')) {
+									return tryNext();
+								}
+							}
+						
+							// First shard holds include output
+							shard(function (shard, echo) {
+								var result;
+								if (!error) {
+									result = template.call(this, shard, echo, request, response);
+								}
+
+								// Create a new shard in the callback shard to hold the actual callback response
+								// Note: we can't just use the existing shard, as we wouldn't know whether to close it or not
+								callbackShard.shard(function (shard, echo) {
+									callback.call(shard, error, result, shard, echo);
+								}, true);
+								// Close the callback shard
+								callbackShard.done();
+							}, true);
+						
+							// Second shard holds callback output
+							var callbackShard = shard(function (shard, echo) {
+							});
+							shard.done();
+						});
+					}
+					tryNext();
+				});
+			}
+
+			getTemplateForFile(scriptPath, function (error, template) {
+				if (error) {
+					return next();
+				}
+				response.setHeader('Content-Type', 'text/html');
+				thisHandler.writeShard(request, response, function (shard, echo) {
+					return template.call(this, shard, echo, request, response);
+				}, null, include);
 			});
 		}));
-		return jstlReader;
+		
+		var result = new Handler(/(\.jshtml(\/.*)?|\/$)/i, function (request, response, next) {
+			var origNext = next;
+			var extIndex = request.path.toLowerCase().indexOf(".jshtml/");
+			if (extIndex != -1) {
+				var oldPath = request.path;
+				var oldPathSuffix = request.pathSuffix;
+				request.pathSuffix = oldPath.substring(extIndex + 7);
+				request.path = oldPath.substring(0, extIndex + 7);
+				next = function () {
+					request.path = oldPath;
+					if (oldPathSuffix === undefined) {
+						delete request.pathSuffix;
+					} else {
+						request.pathSuffix = oldPathSuffix;
+					}
+					origNext();
+				};
+			}
+			return handleFile.process(request, response, next);
+		});
+		result.addIncludeDir = function addIncludeDir(dir) {
+			includeDirs.push(dir);
+			return this;
+		}
+		return result;
 	})();
 		
 })(module.exports);
