@@ -451,7 +451,7 @@
 				if (varName.charAt(0) == "=") {
 					return "ent.encode('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == "%") {
-					return "encodeURIComponents('' + (" + varName.substring(1) + "))";
+					return "encodeURIComponent('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == ":") {
 					return "JSON.stringify('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == "*") {
