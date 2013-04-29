@@ -394,15 +394,89 @@
 		});
 	};
 	
+	publicApi.cacheControl = function (filter, params) {
+		var cacheControlParams = [];
+		if (params['max-age'] = (params['max-age'] || params['maxAge'])) {
+			cacheControlParams.push("max-age=" + params['max-age']);
+		}
+		if (params['s-max-age'] = (params['s-max-age'] || params['sMaxAge'])) {
+			cacheControlParams.push("s-max-age=" + params['s-max-age']);
+		}
+		if (params['public']) {
+			cacheControlParams.push("public");
+		}
+		if (params['private']) {
+			cacheControlParams.push("private");
+		}
+		if (params['no-cache'] = (params['no-cache'] || params['noCache'])) {
+			cacheControlParams.push("noCache");
+		}
+		if (params['no-store'] = (params['no-store'] || params['noStore'])) {
+			cacheControlParams.push("no-store");
+		}
+		if (params['must-revalidate'] = (params['must-revalidate'] || params['mustRevalidate'])) {
+			cacheControlParams.push("must-revalidate");
+		}
+		if (params['proxy-revalidate'] = (params['proxy-revalidate'] || params['proxyRevalidate'])) {
+			cacheControlParams.push("proxy-revalidate");
+		}
+		var cacheHeader = cacheControlParams.join(", ");
+
+		var handler = new Handler(filter, function (request, response, next) {
+			if (params['max-age']) {
+				var expiresDate = new Date;
+				expiresDate.setSeconds(expiresDate.getSeconds() + params['max-age']);
+				response.setHeader("Expires", expiresDate.toUTCString());
+			}
+			response.setHeader("Cache-Control", cacheHeader);
+			next();
+		});
+		return handler;
+	};
+	publicApi.cacheControl.presets = {
+		staticFiles: {
+			maxAge: 3600,
+			"public": true,
+			"private": true,
+			"must-revalidate": false
+		},
+		short: {
+			maxAge: 60
+		}
+	};
+	
 	var handlers = {};
 	publicApi.handlers = handlers;
 	
-	handlers.plain = publicApi.indexFiles(true, ["index.html", "index.htm"])
-		.addHandler(publicApi.fileReader(true, function (request, response, buffer, next) {
-			var mimeType = mime.lookup(request.path);
-			response.setHeader('Content-Type', mimeType);
-			response.end(buffer);
-		}));
+	handlers.plain = publicApi.indexFiles(true, ["index.html", "index.htm"]);
+	handlers.plain.addHandler(new Handler(true, function (request, response, next) {
+		var modifiedSince = null;
+		if (request.headers['if-modified-since']) {
+			modifiedSince = new Date(request.headers['if-modified-since']);
+		}
+		var filePath = request.localPath + request.url;
+		var filePath = fs.stat(filePath, function (error, stat) {
+			if (error) {
+				return next();
+			}
+			if (modifiedSince && (stat.mtime <= modifiedSince)) {
+				response.statusCode = 304;
+				response.end();
+				return;
+			}
+			response.fileModified = stat.mtime;
+			next();
+		});
+	}));
+	handlers.plain.addHandler(publicApi.fileReader(true, function (request, response, buffer, next) {
+		var mimeType = mime.lookup(request.path);
+		response.setHeader('Content-Type', mimeType);
+		if (response.fileModified) {
+			response.setHeader('Last-Modified', response.fileModified.toUTCString());
+		}
+		response.end(buffer);
+	}));
+
 
 	handlers.jstl = (function () {
 		var includeDirs = [];
