@@ -26,7 +26,7 @@
 		this.include = includeFunction;
 		
 		this.echo = function (string) {
-			if (queue.length == 0 && callbacks) {
+			if (queue.length == 0 && callbacks && string) {
 				callbacks.data(string);
 			} else {
 				bufferString += string;
@@ -250,23 +250,26 @@
 	util.inherits(JstlServer, http.Server);
 	
 	publicApi.errorPage = function errorPage(code, error, request, response) {
+		var trace = null;
+		if (error) {
+			trace = error.stack.split("\n");
+		}
+		var errorDocument = "\n\n" + JSON.stringify({
+			statusCode: code,
+			statusText: http.STATUS_CODES[code],
+			error: util.inspect(error),
+			trace: trace
+		}, null, '\t');
+
 		if (!response.headersSent) {	
 			response.statusCode = code;
 			response.removeHeader('Cache-Control');
 			response.removeHeader('Last-Modified');
 			response.removeHeader('Expires');
 			response.setHeader('Content-Type', 'application/json');
+			response.setHeader('Content-Length', Buffer.byteLength(errorDocument, 'utf8'));
 		}
-		var trace = null;
-		if (error) {
-			trace = error.stack.split("\n");
-		}
-		response.end("\n\n" + JSON.stringify({
-			statusCode: code,
-			statusText: http.STATUS_CODES[code],
-			error: util.inspect(error),
-			trace: trace
-		}, null, '\t'));
+		response.end(errorDocument, 'utf8');
 	};
 	
 	publicApi.DocumentShard = DocumentShard;
@@ -292,6 +295,9 @@
 			request.query = {};
 		}
 		request.params = {};
+		if (path.sep != "/") {
+			request.path = request.path.split(path.sep).join("/");
+		}
 		
 		request.getData = function (callback) {
 			var data = null;
@@ -338,6 +344,10 @@
 
 			request.path = remainder;
 			request.localPath = path.resolve(request.localPath, localPath);
+			if (path.sep != "/") {
+				request.path = request.path.split(path.sep).join("/");
+				request.localPath = request.localPath.split(path.sep).join("/");
+			}
 			
 			this.subHandlers(request, response, function () {
 				request.path = oldWebPath;
@@ -362,7 +372,7 @@
 			filePath = path.resolve(request.localPath, filePath);
 			fs.readFile(filePath, function (error, buffer) {
 				if (error) {
-					if (error.code == 'ENOENT' || error.code == 'ENOTDIR') {
+					if (error.code == 'ENOENT' || error.code == 'ENOTDIR' || error.code == 'EISDIR') {
 						return next();
 					}
 					throw error;
@@ -526,12 +536,14 @@
 				echo: null
 			};
 			var directExpressionFunction = function (varName) {
-				if (varName.charAt(0) == "=") {
+				if (varName.substring(0, 2) == "=:") {
+					return "ent.encode(JSON.stringify(" + varName.substring(2) + ", null, '\u00a0\u00a0\u00a0\u00a0')).replace(/\\n/g, '<br>')";
+				} else if (varName.charAt(0) == "=") {
 					return "ent.encode('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == "%") {
 					return "encodeURIComponent('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == ":") {
-					return "JSON.stringify('' + (" + varName.substring(1) + "))";
+					return "JSON.stringify(" + varName.substring(1) + ", null, '\t')";
 				} else if (varName.charAt(0) == "*") {
 					return "('' + (" + varName.substring(1) + "))";
 				}
@@ -587,7 +599,7 @@
 						var includeFilename = includePaths.shift();
 						getTemplateForFile(includeFilename, function (error, template) {
 							if (error) {
-								if (includePaths.length && (error.code == 'ENOENT' || error.code == 'ENOTDIR')) {
+								if (includePaths.length && (error.code == 'ENOENT' || error.code == 'ENOTDIR' || error.code == 'EISDIR')) {
 									return tryNext();
 								}
 							}
