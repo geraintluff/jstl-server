@@ -252,11 +252,14 @@
 	publicApi.errorPage = function errorPage(code, error, request, response) {
 		if (!response.headersSent) {	
 			response.statusCode = code;
+			response.removeHeader('Cache-Control');
+			response.removeHeader('Last-Modified');
+			response.removeHeader('Expires');
 			response.setHeader('Content-Type', 'application/json');
 		}
 		var trace = null;
 		if (error) {
-			trace =error.stack.split("\n");
+			trace = error.stack.split("\n");
 		}
 		response.end("\n\n" + JSON.stringify({
 			statusCode: code,
@@ -471,6 +474,7 @@
 	handlers.plain.addHandler(publicApi.fileReader(true, function (request, response, buffer, next) {
 		var mimeType = mime.lookup(request.path);
 		response.setHeader('Content-Type', mimeType);
+		response.setHeader('Content-Length', buffer.length);
 		if (response.fileModified) {
 			response.setHeader('Last-Modified', response.fileModified.toUTCString());
 		}
