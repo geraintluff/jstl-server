@@ -63,9 +63,8 @@
 				if (queue[0] instanceof DocumentShard) {
 					queue[0].callbacks(callbacks.data, shardComplete);
 					return;
-				} else {
-					callbacks.data(queue.shift());
 				}
+				callbacks.data(queue.shift());
 			}
 			if (bufferString) {
 				callbacks.data(bufferString);
@@ -162,7 +161,7 @@
 		} else if (model instanceof RegExp) {
 			return function (request, response) {
 				return model.exec(request.path);
-			}
+			};
 		}
 		return model;
 	}
@@ -177,7 +176,7 @@
 			}
 			request.params = params;
 			return execFunction.call(this, request, response, next);
-		}
+		};
 	}
 	Handler.prototype = {
 		writeShard: function writeShard(request, response, execFunction, doneFunction, includeFunction) {
@@ -208,6 +207,13 @@
 			handlers.push(handler);
 			return this;
 		};
+		this.add = function (handler) {
+			if (handler instanceof Handler) {
+				return this.addHandler(handler);
+			}
+			var handler = publicApi.handlers.create.apply(null, arguments);
+			return this.addHandler(handler);
+		};
 		function subHandlers(request, response, next) {
 			var index = 0;
 			function tryNextHandler() {
@@ -222,17 +228,25 @@
 		this.subHandlers = subHandlers;
 	}
 	util.inherits(CompositeHandler, Handler);
-	
-	var JSON_MEDIA_TYPE = /^application\/([a-zA-Z0-9+]+)?json(;.*)$/g;
+	CompositeHandler.prototype.directory = function (webPath, localPath) {
+		var directoryHandler = handlers.directory(webPath, localPath);
+		this.addHandler(directoryHandler);
+		return directoryHandler;
+	};
+	CompositeHandler.prototype.fileReader = function (model, fileHandler) {
+		var fileReader = handlers.fileReader(model, fileHandler);
+		this.addHandler(fileReader);
+		return this;
+	};
 	
 	function JstlServer() {
 		JstlServer.super_.call(this);
 		
 		var handlers = [];
-		this.addHandler = function handler(handler) {
+		this.addHandler = function addHandler(handler) {
 			handlers.push(handler);
 			return this;
-		}
+		};
 		
 		this.on('request', function (request, response) {
 			var handlerIndex = 0;
@@ -324,7 +338,25 @@
 		next();
 	});
 	
-	publicApi.directoryHandler = function (webPath, localPath) {
+	var handlers = {
+		create: function (model, processor) {
+			model = model || true;
+			processor = processor || function (request, response, next) {
+				next();
+			};
+			return new Handler(model, processor);
+		},
+		createComposite: function (model, processor) {
+			model = model || true;
+			processor = processor || function (request, response, next) {
+				this.subHandlers(request, response, next);
+			};
+			return new CompositeHandler(model, processor);
+		}
+	};
+	publicApi.handlers = handlers;
+
+	handlers.directory = function (webPath, localPath) {
 		if (webPath.charAt(webPath.length - 1) != "/") {
 			webPath += "/";
 		}
@@ -356,8 +388,8 @@
 			});
 		});
 	};
-	
-	publicApi.fileReader = function (model, fileHandler, indexFiles) {
+
+	handlers.fileReader = function (model, fileHandler, indexFiles) {
 		var filter = modelToFilter(model);
 		
 		return new Handler(filter, function (request, response, next) {
@@ -382,7 +414,7 @@
 		});
 	};
 	
-	publicApi.indexFiles = function (model, indexFiles) {
+	handlers.indexFiles = function (model, indexFiles) {
 		var filter = modelToFilter(model);
 		if (indexFiles == undefined) {
 			indexFiles = [];
@@ -407,7 +439,7 @@
 		});
 	};
 	
-	publicApi.cacheControl = function (filter, params) {
+	handlers.cacheControl = function (filter, params) {
 		var cacheControlParams = [];
 		if (params['max-age'] = (params['max-age'] || params['maxAge'])) {
 			cacheControlParams.push("max-age=" + params['max-age']);
@@ -446,7 +478,7 @@
 		});
 		return handler;
 	};
-	publicApi.cacheControl.presets = {
+	handlers.cacheControl.presets = {
 		staticFiles: {
 			maxAge: 3600,
 			"public": true,
@@ -458,10 +490,7 @@
 		}
 	};
 	
-	var handlers = {};
-	publicApi.handlers = handlers;
-	
-	handlers.plain = publicApi.indexFiles(true, ["index.html", "index.htm"]);
+	handlers.plain = handlers.indexFiles(true, ["index.html", "index.htm"]);
 	handlers.plain.addHandler(new Handler(true, function (request, response, next) {
 		var modifiedSince = null;
 		if (request.headers['if-modified-since']) {
@@ -481,7 +510,7 @@
 			next();
 		});
 	}));
-	handlers.plain.addHandler(publicApi.fileReader(true, function (request, response, buffer, next) {
+	handlers.plain.addHandler(handlers.fileReader(true, function (request, response, buffer, next) {
 		var mimeType = mime.lookup(request.path);
 		response.setHeader('Content-Type', mimeType);
 		response.setHeader('Content-Length', buffer.length);
@@ -562,7 +591,7 @@
 					return callback(error);
 				}
 				if (stats.mtime >= cached.when) {
-					loadFromFile();
+					return loadFromFile();
 				}
 				var template = cached.template;
 				callback(null, template);
@@ -580,7 +609,7 @@
 			}
 		}
 		
-		var handleFile = new publicApi.indexFiles(true, ["index.jshtml"]);
+		var handleFile = new handlers.indexFiles(true, ["index.jshtml"]);
 		handleFile.addHandler(new Handler(true, function (request, response, next) {
 			var thisHandler = this;
 			var scriptPath = request.localPath + request.path;
