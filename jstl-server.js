@@ -4,27 +4,27 @@
 	var fs = require('fs');
 	var path = require('path');
 	var querystring = require('querystring');
-	
-	var ent = require('ent');
+
+	var he = require('he');
 	var mime = require('mime');
 	var jstl = require('jstl');
-	
+
 	var JSON_MEDIA_TYPE = /^application\/([a-zA-Z+]\+)?json(;.*)?/;
-	
+
 	var counter = 0;
 	function DocumentShard(executeFunction, defaultToDone, includeFunction) {
 		var thisCounter = this.counter = counter++;
 		if (!executeFunction) {
 			throw new Error;
 		}
-		
+
 		var thisShard = this;
 		var queue = [];
 		var bufferString = "";
 		var callbacks = null;
-		
+
 		this.include = includeFunction;
-		
+
 		this.echo = function (string) {
 			if (queue.length == 0 && callbacks && string) {
 				callbacks.data(string);
@@ -86,7 +86,7 @@
 			moveToNextShard();
 			return this;
 		};
-		
+
 		this.shard = function (executeFunction, defaultToDone) {
 			if (bufferString || (queue.length == 0 && !callbacks)) {
 				queue.push(bufferString);
@@ -106,7 +106,7 @@
 			}
 			return shard.shard;
 		};
-		
+
 		var executed = false;
 		this.done = function (error) {
 			if (error) {
@@ -145,7 +145,7 @@
 			}
 		});
 	}
-	
+
 	function modelToFilter(model) {
 		if (typeof model == "boolean") {
 			return function () {
@@ -165,10 +165,10 @@
 		}
 		return model;
 	}
-	
+
 	function Handler(model, execFunction) {
 		var filter = modelToFilter(model);
-		
+
 		this.process = function (request, response, next) {
 			var params;
 			if (!(params = filter(request, response))) {
@@ -195,13 +195,13 @@
 			}, doneFunction);
 		}
 	};
-	
+
 	function CompositeHandler(filter, processFunction) {
 		if (!processFunction) {
 			processFunction = subHandlers;
 		}
 		CompositeHandler.super_.call(this, filter, processFunction);
-		
+
 		var handlers = [];
 		this.addHandler = function (handler) {
 			handlers.push(handler);
@@ -260,19 +260,19 @@
 			publicApi.errorPage(errorCode, error || null, request, response);
 		});
 	}
-	
+
 	function JstlServer() {
 		JstlServer.super_.call(this);
-		
+
 		var handlers = [];
 		this.addHandler = function addHandler(handler) {
 			handlers.push(handler);
 			return this;
 		};
-		
+
 		this.on('request', function (request, response) {
 			var handlerIndex = 0;
-			
+
 			function tryNextHandler() {
 				if (handlerIndex < handlers.length) {
 					var handler = handlers[handlerIndex++];
@@ -284,7 +284,7 @@
 		});
 	}
 	util.inherits(JstlServer, http.Server);
-	
+
 	publicApi.errorPage = function errorPage(code, error, request, response) {
 		var trace = null;
 		if (error) {
@@ -297,7 +297,7 @@
 			trace: trace
 		}, null, '\t');
 
-		if (!response.headersSent) {	
+		if (!response.headersSent) {
 			response.statusCode = code;
 			response.removeHeader('Cache-Control');
 			response.removeHeader('Last-Modified');
@@ -307,7 +307,7 @@
 		}
 		response.end(errorDocument, 'utf8');
 	};
-	
+
 	publicApi.DocumentShard = DocumentShard;
 	publicApi.Handler = Handler;
 	publicApi.CompositeHandler = CompositeHandler;
@@ -316,10 +316,10 @@
 		server.addHandler(enhanceRequests);
 		return server;
 	};
-	
+
 	var enhanceRequests = new Handler(/.*/, function (request, response, next) {
 		request.localPath = ".";
-		
+
 		var queryIndex = request.url.indexOf("?");
 		if (queryIndex >= 0) {
 			request.path = request.url.substring(0, queryIndex);
@@ -334,7 +334,7 @@
 		if (path.sep != "/") {
 			request.path = request.path.split(path.sep).join("/");
 		}
-		
+
 		request.getData = function (callback) {
 			var data = null;
 			var dataObj = undefined;
@@ -359,7 +359,7 @@
 		};
 		next();
 	});
-	
+
 	var handlers = {
 		create: function (model, processor) {
 			model = model || true;
@@ -377,7 +377,7 @@
 		}
 	};
 	publicApi.handlers = handlers;
-	
+
 	handlers.method = function (methods, processor) {
 		var allowedMethods = {};
 		if (Array.isArray(methods)) {
@@ -403,11 +403,11 @@
 		var filter = function (request, response) {
 			return request.path.substring(0, webPath.length) == webPath;
 		};
-		
+
 		return new CompositeHandler(filter, function (request, response, next) {
 			var oldWebPath = request.path;
 			var oldLocalPath = request.localPath;
-			
+
 			var remainder = request.path.substring(webPath.length - 1);
 			remainder = path.normalize(remainder).replace(/^(\.\.\/)*/g, "");
 
@@ -417,7 +417,7 @@
 				request.path = request.path.split(path.sep).join("/");
 				request.localPath = request.localPath.split(path.sep).join("/");
 			}
-			
+
 			this.subHandlers(request, response, function () {
 				request.path = oldWebPath;
 				request.localPath = oldLocalPath;
@@ -428,7 +428,7 @@
 
 	handlers.fileReader = function (model, fileHandler, indexFiles) {
 		var filter = modelToFilter(model);
-		
+
 		return new Handler(filter, function (request, response, next) {
 			var thisHandler = this;
 			if (request.path.charAt(request.path.length - 1) == "/") {
@@ -450,13 +450,13 @@
 			});
 		});
 	};
-	
+
 	handlers.indexFiles = function (model, indexFiles) {
 		var filter = modelToFilter(model);
 		if (indexFiles == undefined) {
 			indexFiles = [];
 		}
-		
+
 		return new CompositeHandler(filter, function (request, response, next) {
 			if (request.path.charAt(request.path.length - 1) != "/") {
 				return this.subHandlers(request, response, next);
@@ -475,7 +475,7 @@
 			return tryNextIndex();
 		});
 	};
-	
+
 	handlers.cacheControl = function (filter, params) {
 		var cacheControlParams = [];
 		if (params['max-age'] = (params['max-age'] || params['maxAge'])) {
@@ -526,7 +526,7 @@
 			maxAge: 60
 		}
 	};
-	
+
 	handlers.plain = handlers.indexFiles(true, ["index.html", "index.htm"]);
 	handlers.plain.addHandler(new Handler(true, function (request, response, next) {
 		var modifiedSince = null;
@@ -591,7 +591,7 @@
 			}
 			return entry;
 		}
-		
+
 		function compileTemplate(scriptPath, string) {
 			var headerText = [
 				"var shard = arguments[0];",
@@ -600,15 +600,15 @@
 				"var response = arguments[3];"
 			].join("\n");
 			var predefinedVars = {
-				ent: ent,
+				he: he,
 				require: require,
 				echo: null
 			};
 			var directExpressionFunction = function (varName) {
 				if (varName.substring(0, 2) == "=:") {
-					return "ent.encode(JSON.stringify(" + varName.substring(2) + ", null, '\u00a0\u00a0\u00a0\u00a0')).replace(/\\n/g, '<br>')";
+					return "he.encode(JSON.stringify(" + varName.substring(2) + ", null, '\u00a0\u00a0\u00a0\u00a0')).replace(/\\n/g, '<br>')";
 				} else if (varName.charAt(0) == "=") {
-					return "ent.encode('' + (" + varName.substring(1) + "))";
+					return "he.encode('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == "%") {
 					return "encodeURIComponent('' + (" + varName.substring(1) + "))";
 				} else if (varName.charAt(0) == ":") {
@@ -620,7 +620,7 @@
 			var template = jstl.create(string).compile(directExpressionFunction, headerText, predefinedVars);
 			return template;
 		}
-		
+
 		function getTemplateForFile(scriptPath, callback) {
 			var cached = getCached(scriptPath);
 			if (!cached) {
@@ -636,7 +636,7 @@
 				var template = cached.template;
 				callback(null, template);
 			});
-			
+
 			function loadFromFile() {
 				fs.readFile(scriptPath, {encoding: 'utf8'}, function (error, templateCode) {
 					if (error) {
@@ -648,13 +648,13 @@
 				})
 			}
 		}
-		
+
 		var handleFile = new handlers.indexFiles(true, ["index.jshtml"]);
 		handleFile.addHandler(new Handler(true, function (request, response, next) {
 			var thisHandler = this;
 			var scriptPath = request.localPath + request.path;
 			var scriptDir = path.dirname(scriptPath);
-			
+
 			function include(includeFilename, callback) {
 				if (!callback) {
 					callback = function (error, result, shard, echo) {};
@@ -672,7 +672,7 @@
 									return tryNext();
 								}
 							}
-						
+
 							// First shard holds include output
 							shard(function (shard, echo) {
 								var result;
@@ -688,7 +688,7 @@
 								// Close the callback shard
 								callbackShard.done();
 							}, true);
-						
+
 							// Second shard holds callback output
 							var callbackShard = shard(function (shard, echo) {
 							});
@@ -709,7 +709,7 @@
 				}, null, include);
 			});
 		}));
-		
+
 		var result = new Handler(/(\.jshtml(\/.*)?|\/$)/i, function (request, response, next) {
 			var origNext = next;
 			var extIndex = request.path.toLowerCase().indexOf(".jshtml/");
@@ -736,5 +736,5 @@
 		}
 		return result;
 	})();
-		
+
 })(module.exports);
