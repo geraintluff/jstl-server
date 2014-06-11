@@ -18,9 +18,9 @@
     }
   ],
   "dependencies": {
-    "ent": ">= 0.x",
-    "mime": ">= 1.x.x",
-    "jstl": ">= 0.0.x"
+    "he": ">= 0.4.1",
+    "jstl": ">= 0.0.x",
+    "mime": ">= 1.x.x"
   },
   "main": "jstl-server.js",
   "repository": {
